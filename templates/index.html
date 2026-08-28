@@ -2,164 +2,412 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Multiplayer Bridge Practice Coach</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bridge Practice Arena & Real-Time Coach</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1b4332; color: #fff; margin: 0; padding: 20px; }
-        .container { display: grid; grid-template-columns: 3fr 1fr; gap: 20px; max-width: 1200px; margin: auto; }
-        .table { background: #2d6a4f; border: 8px solid #081c15; border-radius: 12px; height: 600px; position: relative; display: flex; justify-content: center; align-items: center; }
-        .seat { position: absolute; font-weight: bold; text-align: center; }
+        :root {
+            --bg-felt: #1a4329;
+            --felt-inner: #245c38;
+            --felt-border: #0d2818;
+            --panel-bg: #111a15;
+            --card-red: #d90429;
+            --card-black: #1e1e24;
+            --accent: #52b788;
+            --gold: #ffb703;
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #08120c;
+            color: #f8f9fa;
+            margin: 0;
+            padding: 16px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 1fr 340px;
+            gap: 20px;
+            max-width: 1400px;
+            width: 100%;
+        }
+
+        /* Bridge Table */
+        .table-container {
+            background: radial-gradient(circle, var(--felt-inner) 60%, var(--bg-felt) 100%);
+            border: 12px solid var(--felt-border);
+            border-radius: 24px;
+            height: 720px;
+            position: relative;
+            box-shadow: inset 0 0 60px rgba(0,0,0,0.6), 0 10px 30px rgba(0,0,0,0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* Player Seats */
+        .seat {
+            position: absolute;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            z-index: 5;
+        }
         .seat-North { top: 15px; }
         .seat-South { bottom: 15px; }
-        .seat-West { left: 15px; top: 45%; }
-        .seat-East { right: 15px; top: 45%; }
+        .seat-West { left: 20px; top: 50%; transform: translateY(-50%); }
+        .seat-East { right: 20px; top: 50%; transform: translateY(-50%); }
+
+        .seat-tag {
+            background: rgba(0,0,0,0.6);
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-weight: bold;
+            font-size: 13px;
+            border: 1px solid rgba(255,255,255,0.2);
+            margin-bottom: 6px;
+        }
+        .seat-tag.active {
+            background: var(--gold);
+            color: black;
+            border-color: #fff;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+
+        /* Playing Cards */
+        .hand {
+            display: flex;
+            gap: -18px;
+            justify-content: center;
+            min-height: 80px;
+        }
+        .card {
+            width: 48px;
+            height: 72px;
+            background: #ffffff;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+            box-shadow: 2px 2px 6px rgba(0,0,0,0.4);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 4px;
+            font-weight: 800;
+            font-size: 14px;
+            cursor: pointer;
+            user-select: none;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+            margin: 0 -8px;
+        }
+        .card:hover {
+            transform: translateY(-16px) scale(1.08);
+            z-index: 100 !important;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+        }
+        .card.red { color: var(--card-red); }
+        .card.black { color: var(--card-black); }
         
-        .hand { display: flex; gap: 4px; justify-content: center; margin-top: 5px; }
-        .card { background: white; color: black; border-radius: 4px; padding: 6px 10px; cursor: pointer; user-select: none; font-weight: bold; }
-        .card.red { color: #d90429; }
-        .card:hover { transform: translateY(-5px); }
-        .card-back { background: #40916c; width: 20px; height: 35px; border-radius: 3px; border: 1px solid white; display: inline-block; }
-        
-        .trick-area { width: 220px; height: 180px; border: 2px dashed #74c69d; border-radius: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 10px; box-sizing: border-box; }
-        .panel { background: #081c15; padding: 20px; border-radius: 12px; font-size: 14px; }
-        .badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; display: inline-block; margin-bottom: 5px; }
+        .card-back {
+            width: 32px;
+            height: 52px;
+            background: repeating-linear-gradient(45deg, #1b4965, #1b4965 5px, #2b2d42 5px, #2b2d42 10px);
+            border: 2px solid white;
+            border-radius: 4px;
+            margin: 0 -10px;
+        }
+
+        /* Center Trick Area */
+        .trick-zone {
+            width: 240px;
+            height: 240px;
+            background: rgba(0,0,0,0.25);
+            border: 2px dashed rgba(255,255,255,0.2);
+            border-radius: 16px;
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .trick-card { position: absolute; }
+        .trick-card.pos-South { bottom: 20px; }
+        .trick-card.pos-North { top: 20px; }
+        .trick-card.pos-West { left: 20px; }
+        .trick-card.pos-East { right: 20px; }
+
+        /* Side Panel */
+        .sidebar {
+            background: var(--panel-bg);
+            border-radius: 20px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            max-height: 720px;
+            overflow-y: auto;
+        }
+
+        .coach-card {
+            background: #19271f;
+            border-left: 4px solid var(--accent);
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .badge {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
         .badge-optimal { background: #2dc653; color: black; }
-        .badge-suboptimal { background: #ffb703; color: black; }
-        .bidding-box { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
-        .btn { background: #52b788; border: none; padding: 6px 12px; border-radius: 4px; color: black; font-weight: bold; cursor: pointer; }
+        .badge-acceptable { background: var(--gold); color: black; }
+
+        /* Visual Bidding Box */
+        .bidding-box {
+            background: #16221c;
+            border-radius: 12px;
+            padding: 12px;
+            border: 1px solid #2d4a3e;
+        }
+        .bid-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 4px;
+            margin-bottom: 8px;
+        }
+        .bid-btn {
+            background: #22382e;
+            color: #fff;
+            border: 1px solid #365949;
+            padding: 8px 4px;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .bid-btn:hover:not(:disabled) {
+            background: var(--accent);
+            color: black;
+        }
+        .bid-btn:disabled {
+            opacity: 0.25;
+            cursor: not-allowed;
+        }
+        .bid-btn.pass { background: #2b9348; grid-column: span 5; }
+
+        .contract-banner {
+            background: #2d4035;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+        }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <div class="table">
+<div class="layout">
+    <!-- Interactive Bridge Table -->
+    <div class="table-container">
+        <!-- North -->
         <div class="seat seat-North" id="seat-North">
-            <div>North (Human)</div>
+            <div class="seat-tag" id="tag-North">North (Partner)</div>
             <div class="hand" id="hand-North"></div>
         </div>
+
+        <!-- West -->
         <div class="seat seat-West" id="seat-West">
-            <div>West (Bot)</div>
+            <div class="seat-tag" id="tag-West">West (Bot)</div>
             <div class="hand" id="hand-West"></div>
         </div>
+
+        <!-- Center Trick Area -->
+        <div class="trick-zone" id="trick-zone"></div>
+
+        <!-- East -->
         <div class="seat seat-East" id="seat-East">
-            <div>East (Bot)</div>
+            <div class="seat-tag" id="tag-East">East (Bot)</div>
             <div class="hand" id="hand-East"></div>
         </div>
-        <div class="seat seat-South" id="seat-South">
-            <div>South (Human)</div>
-            <div class="hand" id="hand-South"></div>
-        </div>
 
-        <div class="trick-area" id="trick-area"></div>
+        <!-- South -->
+        <div class="seat seat-South" id="seat-South">
+            <div class="hand" id="hand-South"></div>
+            <div class="seat-tag" id="tag-South" style="margin-top: 6px;">South (You)</div>
+        </div>
     </div>
 
-    <div class="panel">
-        <h2>Practice Coach</h2>
-        <div><strong>Turn:</strong> <span id="current-turn">South</span></div>
-        <div><strong>Phase:</strong> <span id="game-phase">BIDDING</span></div>
-        <div><strong>Tricks Won:</strong> NS: <span id="score-ns">0</span> | EW: <span id="score-ew">0</span></div>
-
-        <hr>
-        <h3>Real-time Advice</h3>
-        <div id="advice-box">
-            <span class="badge badge-optimal">Recommended</span>
-            <div id="advice-suggestion">--</div>
-            <p id="advice-reason" style="color: #b7e4c7;"></p>
-        </div>
-
-        <div id="bidding-controls" style="display: none;">
-            <h3>Make a Bid</h3>
-            <div class="bidding-box">
-                <button class="btn" onclick="sendBid('PASS')">PASS</button>
-                <button class="btn" onclick="sendBid('1♣')">1♣</button>
-                <button class="btn" onclick="sendBid('1♦')">1♦</button>
-                <button class="btn" onclick="sendBid('1♥')">1♥</button>
-                <button class="btn" onclick="sendBid('1♠')">1♠</button>
-                <button class="btn" onclick="sendBid('1NT')">1NT</button>
+    <!-- Coach & Auction Sidebar -->
+    <div class="sidebar">
+        <div>
+            <h2 style="margin: 0 0 6px 0;">Bridge Coach AI</h2>
+            <div class="contract-banner">
+                <span id="banner-contract">Contract: Passing...</span>
+                <span id="banner-tricks">Tricks: NS 0 - 0 EW</span>
             </div>
         </div>
 
-        <hr>
-        <h3>Feedback History</h3>
-        <div id="feedback-log" style="max-height: 180px; overflow-y: auto;"></div>
+        <!-- Real-time Coach Advice -->
+        <div class="coach-card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-weight: bold; font-size: 13px;">AI Recommendation</span>
+                <span class="badge badge-optimal" id="advice-badge">Optimal</span>
+            </div>
+            <div id="advice-target" style="font-size: 18px; font-weight: 800; color: var(--gold); margin: 6px 0;">--</div>
+            <div id="advice-reason" style="font-size: 12px; line-height: 1.4; color: #d8f3dc;">Waiting for turn...</div>
+        </div>
+
+        <!-- Interactive Bidding Box -->
+        <div class="bidding-box" id="bidding-box" style="display: none;">
+            <div style="font-weight: bold; font-size: 12px; margin-bottom: 8px;">Select Bid:</div>
+            <div class="bid-grid" id="bid-buttons"></div>
+            <button class="bid-btn pass" onclick="makeBid('PASS')">PASS</button>
+        </div>
+
+        <!-- New Hand Control -->
+        <button class="bid-btn" id="new-hand-btn" style="display: none; background: var(--accent); color: black;" onclick="socket.emit('new_deal')">Deal Next Hand</button>
+
+        <!-- Auction Recap Log -->
+        <div>
+            <h4 style="margin: 0 0 6px 0;">Auction / Trick History</h4>
+            <div id="action-log" style="font-size: 12px; max-height: 200px; overflow-y: auto; background: #0c1510; padding: 8px; border-radius: 8px;"></div>
+        </div>
     </div>
 </div>
 
 <script>
     const socket = io();
-    let myRole = prompt("Choose Seat (South or North):", "South");
+    const myRole = prompt("Join Table as (South or North):", "South") || "South";
     socket.emit('join_game', { role: myRole });
 
-    socket.on('game_update', (data) => {
-        document.getElementById('current-turn').innerText = data.current_seat;
-        document.getElementById('game-phase').innerText = data.phase;
-        document.getElementById('score-ns').innerText = data.tricks_won.NS;
-        document.getElementById('score-ew').innerText = data.tricks_won.EW;
+    const STRAINS = ['♣', '♦', '♥', '♠', 'NT'];
 
-        // Advice Panel
+    // Generate Bidding Box buttons 1♣ to 7NT
+    function setupBiddingBox(highestBid) {
+        const container = document.getElementById('bid-buttons');
+        container.innerHTML = '';
+
+        const highestVal = highestBid ? (highestBid.level * 5 + STRAINS.indexOf(highestBid.strain)) : -1;
+
+        for (let level = 1; level <= 7; level++) {
+            STRAINS.forEach((strain, sIdx) => {
+                const btn = document.createElement('button');
+                btn.className = 'bid-btn';
+                btn.innerText = `${level}${strain}`;
+                const val = level * 5 + sIdx;
+
+                if (val <= highestVal) {
+                    btn.disabled = true;
+                } else {
+                    btn.onclick = () => makeBid(`${level}${strain}`);
+                }
+                container.appendChild(btn);
+            });
+        }
+    }
+
+    function makeBid(bid) {
+        socket.emit('make_bid', { bid: bid });
+    }
+
+    socket.on('game_update', (data) => {
+        // Update Seat tags & Active Turn
+        ['North', 'East', 'South', 'West'].forEach(seat => {
+            const tag = document.getElementById(`tag-${seat}`);
+            let label = `${seat}`;
+            if (data.contract && data.contract.declarer === seat) label += ' [DECL]';
+            if (data.contract && data.contract.dummy === seat) label += ' [DUMMY]';
+            if (data.dealer === seat) label += ' (D)';
+            tag.innerText = label;
+            tag.className = `seat-tag ${data.current_seat === seat ? 'active' : ''}`;
+        });
+
+        // Update Contract Banner
+        if (data.contract) {
+            document.getElementById('banner-contract').innerText = 
+                `Contract: ${data.contract.level}${data.contract.strain} by ${data.contract.declarer}`;
+        } else {
+            document.getElementById('banner-contract').innerText = `Phase: ${data.phase}`;
+        }
+        document.getElementById('banner-tricks').innerText = `NS ${data.tricks_won.NS} - ${data.tricks_won.EW} EW`;
+
+        // Update Coach Panel
         if (data.advice) {
-            document.getElementById('advice-suggestion').innerText = `Target: ${data.advice.best}`;
+            document.getElementById('advice-target').innerText = `Target Move: ${data.advice.best}`;
             document.getElementById('advice-reason').innerText = data.advice.reason;
         }
 
-        // Bidding controls visibility
-        document.getElementById('bidding-controls').style.display = 
-            (data.phase === 'BIDDING' && data.current_seat === myRole) ? 'block' : 'none';
+        // Bidding Box Visibility
+        const isMyBiddingTurn = (data.phase === 'BIDDING' && data.current_seat === myRole);
+        document.getElementById('bidding-box').style.display = isMyBiddingTurn ? 'block' : 'none';
+        if (isMyBiddingTurn) {
+            setupBiddingBox(data.highest_bid);
+        }
+
+        // Deal Next Hand button
+        document.getElementById('new-hand-btn').style.display = (data.phase === 'HAND_OVER') ? 'block' : 'none';
 
         // Render Hands
-        ['South', 'North', 'West', 'East'].forEach(seat => {
-            const handContainer = document.getElementById(`hand-${seat}`);
-            handContainer.innerHTML = '';
-            
-            if (seat === myRole) {
-                data.hands[seat].forEach(card => {
-                    const el = document.createElement('div');
-                    el.className = `card ${['♥','♦'].includes(card.suit) ? 'red' : ''}`;
-                    el.innerText = `${card.rank}${card.suit}`;
-                    el.onclick = () => {
-                        if (data.phase === 'PLAY' && data.current_seat === myRole) {
-                            socket.emit('play_card', { card: card });
-                        }
-                    };
-                    handContainer.appendChild(el);
-                });
-            } else {
-                for (let i = 0; i < data.hands[seat].length; i++) {
-                    const el = document.createElement('div');
-                    el.className = 'card-back';
-                    handContainer.appendChild(el);
+        ['North', 'East', 'South', 'West'].forEach(seat => {
+            const handEl = document.getElementById(`hand-${seat}`);
+            handEl.innerHTML = '';
+
+            const isDummy = (data.contract && data.contract.dummy === seat);
+            const isVisible = (seat === myRole) || (isDummy && data.dummy_revealed);
+
+            // Determine if the current client can play this hand (Declarer plays Dummy)
+            const canPlayHand = (data.phase === 'PLAY' && data.current_seat === seat) &&
+                (seat === myRole || (isDummy && data.contract.declarer === myRole));
+
+            data.hands[seat].forEach((card, idx) => {
+                if (isVisible) {
+                    const c = document.createElement('div');
+                    c.className = `card ${['♥','♦'].includes(card.suit) ? 'red' : 'black'}`;
+                    c.style.zIndex = idx;
+                    c.innerHTML = `<div>${card.rank}</div><div>${card.suit}</div>`;
+
+                    if (canPlayHand) {
+                        c.onclick = () => socket.emit('play_card', { card: card, source_seat: seat });
+                    }
+                    handEl.appendChild(c);
+                } else {
+                    const cb = document.createElement('div');
+                    cb.className = 'card-back';
+                    handEl.appendChild(cb);
                 }
-            }
+            });
         });
 
-        // Render Trick
-        const trickArea = document.getElementById('trick-area');
+        // Render Active Trick
+        const trickArea = document.getElementById('trick-zone');
         trickArea.innerHTML = '';
-        data.trick.forEach(play => {
+        data.trick.forEach(p => {
             const el = document.createElement('div');
-            el.className = `card ${['♥','♦'].includes(play.card.suit) ? 'red' : ''}`;
-            el.innerText = `${play.seat}: ${play.card.rank}${play.card.suit}`;
+            el.className = `card trick-card pos-${p.seat} ${['♥','♦'].includes(p.card.suit) ? 'red' : 'black'}`;
+            el.innerHTML = `<div>${p.card.rank}</div><div>${p.card.suit}</div>`;
             trickArea.appendChild(el);
         });
 
-        // Log Feedback
-        const log = document.getElementById('feedback-log');
+        // Feedback History Log
+        const log = document.getElementById('action-log');
         log.innerHTML = '';
-        [...data.bids, ...data.trick].forEach(entry => {
-            if (entry.feedback) {
-                const el = document.createElement('div');
-                el.style.marginBottom = '6px';
-                el.innerHTML = `<span class="badge ${entry.status === 'best' ? 'badge-optimal' : 'badge-suboptimal'}">${entry.seat}</span> ${entry.feedback}`;
-                log.appendChild(el);
-            }
+        data.bids.forEach(b => {
+            const item = document.createElement('div');
+            item.style.marginBottom = '4px';
+            item.innerHTML = `<strong>${b.seat}:</strong> Bid ${b.bid} <span class="badge badge-${b.status}">${b.status}</span><br><span style="color:#adb5bd;font-size:11px;">${b.feedback}</span>`;
+            log.appendChild(item);
         });
     });
 
     socket.on('error_message', (d) => alert(d.msg));
-
-    function sendBid(bid) {
-        socket.emit('make_bid', { bid: bid });
-    }
 </script>
 </body>
 </html>
