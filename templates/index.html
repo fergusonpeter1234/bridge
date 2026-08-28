@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Multiplayer Bridge Practice Coach</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1b4332; color: #fff; margin: 0; padding: 20px; }
+        .container { display: grid; grid-template-columns: 3fr 1fr; gap: 20px; max-width: 1200px; margin: auto; }
+        .table { background: #2d6a4f; border: 8px solid #081c15; border-radius: 12px; height: 600px; position: relative; display: flex; justify-content: center; align-items: center; }
+        .seat { position: absolute; font-weight: bold; text-align: center; }
+        .seat-North { top: 15px; }
+        .seat-South { bottom: 15px; }
+        .seat-West { left: 15px; top: 45%; }
+        .seat-East { right: 15px; top: 45%; }
+        
+        .hand { display: flex; gap: 4px; justify-content: center; margin-top: 5px; }
+        .card { background: white; color: black; border-radius: 4px; padding: 6px 10px; cursor: pointer; user-select: none; font-weight: bold; }
+        .card.red { color: #d90429; }
+        .card:hover { transform: translateY(-5px); }
+        .card-back { background: #40916c; width: 20px; height: 35px; border-radius: 3px; border: 1px solid white; display: inline-block; }
+        
+        .trick-area { width: 220px; height: 180px; border: 2px dashed #74c69d; border-radius: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 10px; box-sizing: border-box; }
+        .panel { background: #081c15; padding: 20px; border-radius: 12px; font-size: 14px; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; display: inline-block; margin-bottom: 5px; }
+        .badge-optimal { background: #2dc653; color: black; }
+        .badge-suboptimal { background: #ffb703; color: black; }
+        .bidding-box { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
+        .btn { background: #52b788; border: none; padding: 6px 12px; border-radius: 4px; color: black; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="table">
+        <div class="seat seat-North" id="seat-North">
+            <div>North (Human)</div>
+            <div class="hand" id="hand-North"></div>
+        </div>
+        <div class="seat seat-West" id="seat-West">
+            <div>West (Bot)</div>
+            <div class="hand" id="hand-West"></div>
+        </div>
+        <div class="seat seat-East" id="seat-East">
+            <div>East (Bot)</div>
+            <div class="hand" id="hand-East"></div>
+        </div>
+        <div class="seat seat-South" id="seat-South">
+            <div>South (Human)</div>
+            <div class="hand" id="hand-South"></div>
+        </div>
+
+        <div class="trick-area" id="trick-area"></div>
+    </div>
+
+    <div class="panel">
+        <h2>Practice Coach</h2>
+        <div><strong>Turn:</strong> <span id="current-turn">South</span></div>
+        <div><strong>Phase:</strong> <span id="game-phase">BIDDING</span></div>
+        <div><strong>Tricks Won:</strong> NS: <span id="score-ns">0</span> | EW: <span id="score-ew">0</span></div>
+
+        <hr>
+        <h3>Real-time Advice</h3>
+        <div id="advice-box">
+            <span class="badge badge-optimal">Recommended</span>
+            <div id="advice-suggestion">--</div>
+            <p id="advice-reason" style="color: #b7e4c7;"></p>
+        </div>
+
+        <div id="bidding-controls" style="display: none;">
+            <h3>Make a Bid</h3>
+            <div class="bidding-box">
+                <button class="btn" onclick="sendBid('PASS')">PASS</button>
+                <button class="btn" onclick="sendBid('1♣')">1♣</button>
+                <button class="btn" onclick="sendBid('1♦')">1♦</button>
+                <button class="btn" onclick="sendBid('1♥')">1♥</button>
+                <button class="btn" onclick="sendBid('1♠')">1♠</button>
+                <button class="btn" onclick="sendBid('1NT')">1NT</button>
+            </div>
+        </div>
+
+        <hr>
+        <h3>Feedback History</h3>
+        <div id="feedback-log" style="max-height: 180px; overflow-y: auto;"></div>
+    </div>
+</div>
+
+<script>
+    const socket = io();
+    let myRole = prompt("Choose Seat (South or North):", "South");
+    socket.emit('join_game', { role: myRole });
+
+    socket.on('game_update', (data) => {
+        document.getElementById('current-turn').innerText = data.current_seat;
+        document.getElementById('game-phase').innerText = data.phase;
+        document.getElementById('score-ns').innerText = data.tricks_won.NS;
+        document.getElementById('score-ew').innerText = data.tricks_won.EW;
+
+        // Advice Panel
+        if (data.advice) {
+            document.getElementById('advice-suggestion').innerText = `Target: ${data.advice.best}`;
+            document.getElementById('advice-reason').innerText = data.advice.reason;
+        }
+
+        // Bidding controls visibility
+        document.getElementById('bidding-controls').style.display = 
+            (data.phase === 'BIDDING' && data.current_seat === myRole) ? 'block' : 'none';
+
+        // Render Hands
+        ['South', 'North', 'West', 'East'].forEach(seat => {
+            const handContainer = document.getElementById(`hand-${seat}`);
+            handContainer.innerHTML = '';
+            
+            if (seat === myRole) {
+                data.hands[seat].forEach(card => {
+                    const el = document.createElement('div');
+                    el.className = `card ${['♥','♦'].includes(card.suit) ? 'red' : ''}`;
+                    el.innerText = `${card.rank}${card.suit}`;
+                    el.onclick = () => {
+                        if (data.phase === 'PLAY' && data.current_seat === myRole) {
+                            socket.emit('play_card', { card: card });
+                        }
+                    };
+                    handContainer.appendChild(el);
+                });
+            } else {
+                for (let i = 0; i < data.hands[seat].length; i++) {
+                    const el = document.createElement('div');
+                    el.className = 'card-back';
+                    handContainer.appendChild(el);
+                }
+            }
+        });
+
+        // Render Trick
+        const trickArea = document.getElementById('trick-area');
+        trickArea.innerHTML = '';
+        data.trick.forEach(play => {
+            const el = document.createElement('div');
+            el.className = `card ${['♥','♦'].includes(play.card.suit) ? 'red' : ''}`;
+            el.innerText = `${play.seat}: ${play.card.rank}${play.card.suit}`;
+            trickArea.appendChild(el);
+        });
+
+        // Log Feedback
+        const log = document.getElementById('feedback-log');
+        log.innerHTML = '';
+        [...data.bids, ...data.trick].forEach(entry => {
+            if (entry.feedback) {
+                const el = document.createElement('div');
+                el.style.marginBottom = '6px';
+                el.innerHTML = `<span class="badge ${entry.status === 'best' ? 'badge-optimal' : 'badge-suboptimal'}">${entry.seat}</span> ${entry.feedback}`;
+                log.appendChild(el);
+            }
+        });
+    });
+
+    socket.on('error_message', (d) => alert(d.msg));
+
+    function sendBid(bid) {
+        socket.emit('make_bid', { bid: bid });
+    }
+</script>
+</body>
+</html>
