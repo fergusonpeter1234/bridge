@@ -3,7 +3,7 @@ from flask import Flask, render_template
 from flask_socketio import SocketIO, emit, join_room
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'bridge-master-secret-999'
+app.config['SECRET_KEY'] = 'sayc-bridge-secret-key-2026'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 SUITS = ['♣', '♦', '♥', '♠']
@@ -16,8 +16,8 @@ LHO = {'North': 'East', 'East': 'South', 'South': 'West', 'West': 'North'}
 
 class BridgeGame:
     def __init__(self):
-        self.players = {'South': None, 'North': None}
-        self.dealer_idx = 2  # South deals initially
+        self.mode = 'single'  # 'single' (1 human + 3 bots) or 'multi' (2 humans + 2 bots)
+        self.dealer_idx = 2    # South starts as dealer
         self.reset_game(next_dealer=False)
 
     def reset_game(self, next_dealer=True):
@@ -34,19 +34,29 @@ class BridgeGame:
             'West': sorted(deck[39:52], key=lambda c: (SUITS.index(c['suit']), c['val']))
         }
 
-        self.phase = 'BIDDING'  # 'BIDDING', 'PLAY', 'HAND_OVER', 'PASSED_OUT'
+        self.phase = 'BIDDING'
         self.turn_idx = self.dealer_idx
         self.bids = []
-        self.highest_bid = None      # e.g., {'level': 1, 'strain': '♠', 'seat': 'South', 'rank': 3}
+        self.highest_bid = None
         self.consecutive_passes = 0
         
-        # Play State
-        self.contract = None         # {'level': 4, 'strain': '♠', 'declarer': 'North', 'dummy': 'South', 'target': 10}
+        self.contract = None
         self.dummy_revealed = False
         self.current_trick = []
         self.tricks_won = {'NS': 0, 'EW': 0}
         self.trick_history = []
-        self.coach_feedback = "Game started. Choose your bids carefully!"
+        self.coach_feedback = "Hand ready. Standard American Yellow Card (SAYC) active."
+
+    def is_bot(self, seat):
+        if self.mode == 'single':
+            return seat in ['North', 'East', 'West']
+        return seat in ['East', 'West']
+
+    def get_controller(self, seat):
+        """Returns who has decision authority for `seat`. Declarer controls Dummy."""
+        if self.phase == 'PLAY' and self.contract and seat == self.contract['dummy']:
+            return self.contract['declarer']
+        return seat
 
     def get_hcp(self, seat):
         return sum(HCP.get(c['rank'], 0) for c in self.hands[seat])
@@ -60,50 +70,64 @@ class BridgeGame:
     def bid_value(self, level, strain):
         return int(level) * 5 + STRAINS.index(strain)
 
-    # --- Coaching / AI Auction Engine ---
+    # --- Comprehensive SAYC Bidding Evaluator ---
     def evaluate_bid(self, seat):
         points = self.get_hcp(seat)
         lengths = self.get_suit_lengths(seat)
         partner = PARTNERS[seat]
         partner_bids = [b for b in self.bids if b['seat'] == partner and b['bid'] not in ['PASS', 'X', 'XX']]
 
-        # Rule 1: No bids made yet (Opening)
+        # 1. Opening Bids (No bids made yet)
         if not self.highest_bid:
-            if points < 12:
-                return {'best': 'PASS', 'reason': f"You hold only {points} HCP (less than the standard 12 HCP required to open)."}
-            elif 15 <= points <= 17 and all(1 < l < 6 for l in lengths.values()):
-                return {'best': '1NT', 'reason': f"Balanced hand distribution with {points} HCP fits standard 1NT opening."}
-            elif lengths['♠'] >= 5:
-                return {'best': '1♠', 'reason': f"5-card Spade suit with opening strength ({points} HCP)."}
-            elif lengths['♥'] >= 5:
-                return {'best': '1♥', 'reason': f"5-card Heart suit with opening strength ({points} HCP)."}
-            elif lengths['♦'] >= 4:
-                return {'best': '1♦', 'reason': f"Better minor opening showing 4+ Diamonds ({points} HCP)."}
-            else:
-                return {'best': '1♣', 'reason': f"Standard minor opening showing 3+ Clubs and {points} HCP."}
+            if 15 <= points <= 17 and all(1 < l < 6 for l in lengths.values()):
+                return {'best': '1NT', 'reason': f"SAYC: 15–17 HCP with a balanced hand opens 1NT."}
+            elif 20 <= points <= 21 and all(1 < l < 6 for l in lengths.values()):
+                return {'best': '2NT', 'reason': f"SAYC: 20–21 HCP with a balanced hand opens 2NT."}
+            elif points >= 12:
+                # 5-card majors
+                if lengths['♠'] >= 5 and lengths['♠'] >= lengths['♥']:
+                    return {'best': '1♠', 'reason': f"SAYC: 12+ HCP with 5+ Spades opens 1♠."}
+                elif lengths['♥'] >= 5:
+                    return {'best': '1♥', 'reason': f"SAYC: 12+ HCP with 5+ Hearts opens 1♥."}
+                # Better Minor
+                elif lengths['♦'] >= 4 and lengths['♦'] >= lengths['♣']:
+                    return {'best': '1♦', 'reason': f"SAYC: Minor suit opening showing 4+ Diamonds ({points} HCP)."}
+                else:
+                    return {'best': '1♣', 'reason': f"SAYC: Standard minor suit opening showing 3+ Clubs ({points} HCP)."}
+            elif 5 <= points <= 10:
+                # Weak Two bids (6-card suit with some honor strength)
+                for s in ['♠', '♥', '♦']:
+                    if lengths[s] == 6:
+                        return {'best': f"2{s}", 'reason': f"SAYC Weak Two: 5–10 HCP with a 6-card {s} suit."}
+            return {'best': 'PASS', 'reason': f"SAYC: Pass with fewer than 12 HCP without a weak two suit ({points} HCP)."}
 
-        # Rule 2: Partner opened
-        if partner_bids:
-            p_bid = partner_bids[-1]['bid']
-            p_strain = p_bid[1:] if len(p_bid) > 1 else ''
-            
-            if points < 6:
-                return {'best': 'PASS', 'reason': f"Holding only {points} HCP; pass to keep partner from getting too high."}
-            
-            # Supporting partner's major
-            if p_strain in ['♠', '♥'] and lengths.get(p_strain, 0) >= 3:
-                target_level = '2' if points <= 9 else ('3' if points <= 11 else '4')
-                bid_str = f"{target_level}{p_strain}"
-                if not self.highest_bid or self.bid_value(target_level, p_strain) > self.bid_value(self.highest_bid['level'], self.highest_bid['strain']):
-                    return {'best': bid_str, 'reason': f"Fit found in {p_strain} with {points} HCP (supporting partner)."}
+        # 2. Responding to Partner's 1NT Opening
+        if partner_bids and partner_bids[-1]['bid'] == '1NT':
+            has_4c_major = (lengths['♠'] >= 4 or lengths['♥'] >= 4)
+            if points >= 8 and has_4c_major:
+                return {'best': '2♣', 'reason': "SAYC Stayman: Asking opener for a 4-card major with 8+ HCP."}
+            elif 8 <= points <= 9:
+                return {'best': '2NT', 'reason': "SAYC: 8–9 HCP invitational to 3NT."}
+            elif 10 <= points <= 15:
+                return {'best': '3NT', 'reason': f"SAYC: 10–15 HCP balanced closes game in 3NT."}
+            elif points < 8:
+                return {'best': 'PASS', 'reason': f"SAYC: Pass with weak hand (<8 HCP) opposite 1NT."}
 
-            if 6 <= points <= 9 and self.highest_bid['level'] == 1:
-                return {'best': '1NT', 'reason': f"6-9 HCP with no primary major fit. 1NT shows minimum responding values."}
+        # 3. Responding to Partner's 1-Major (1♥ / 1♠)
+        if partner_bids and partner_bids[-1]['bid'] in ['1♥', '1♠']:
+            p_major = partner_bids[-1]['bid'][1]
+            if lengths[p_major] >= 3:
+                if 6 <= points <= 9:
+                    return {'best': f"2{p_major}", 'reason': f"SAYC: Simple raise to 2{p_major} (6–9 points with 3+ support)."}
+                elif 10 <= points <= 11:
+                    return {'best': f"3{p_major}", 'reason': f"SAYC: Limit raise to 3{p_major} (10–11 points with 3+ support)."}
+                elif points >= 12:
+                    return {'best': f"4{p_major}", 'reason': f"SAYC: Game raise to 4{p_major} with 12+ points and fit."}
 
-        # Default fallback
-        return {'best': 'PASS', 'reason': "No clear forcing bid or fit; passing preserves board discipline."}
+        # 4. General fallback
+        return {'best': 'PASS', 'reason': "SAYC: Pass preserves auction safety with no clear forcing response or fit."}
 
-    # --- Coaching / AI Card Play Engine ---
+    # --- Card Play Evaluator ---
     def evaluate_card(self, seat):
         hand = self.hands[seat]
         if not hand:
@@ -111,43 +135,41 @@ class BridgeGame:
 
         trump = self.contract['strain'] if self.contract else None
 
-        # Leading to a trick
+        # Trick Leader
         if not self.current_trick:
-            # Prefer aces or high honors
             honors = [c for c in hand if c['rank'] in ['A', 'K', 'Q']]
             if honors:
                 best = max(honors, key=lambda c: c['val'])
-                return best, f"Lead high honor ({best['rank']}{best['suit']}) to establish trick winners."
+                return best, f"Lead high honor ({best['rank']}{best['suit']}) to take immediate control."
             best = max(hand, key=lambda c: c['val'])
             return best, f"Lead top of your holding in {best['suit']}."
 
-        # Following suit
+        # Following Suit
         lead_suit = self.current_trick[0]['card']['suit']
-        following_cards = [c for c in hand if c['suit'] == lead_suit]
+        following = [c for c in hand if c['suit'] == lead_suit]
 
-        if following_cards:
+        if following:
             highest_in_trick = max(
                 self.current_trick,
                 key=lambda p: p['card']['val'] if p['card']['suit'] == lead_suit else -1
             )
-            winning = [c for c in following_cards if c['val'] > highest_in_trick['card']['val']]
-            if winning:
-                best = min(winning, key=lambda c: c['val'])
-                return best, f"Cover and win the trick economically with {best['rank']}{best['suit']}."
+            winners = [c for c in following if c['val'] > highest_in_trick['card']['val']]
+            if winners:
+                best = min(winners, key=lambda c: c['val'])
+                return best, f"Follow suit and win the trick cheaply with {best['rank']}{best['suit']}."
             else:
-                best = min(following_cards, key=lambda c: c['val'])
+                best = min(following, key=lambda c: c['val'])
                 return best, f"Cannot beat the current winner; duck low with {best['rank']}{best['suit']}."
 
-        # Void in led suit (Trump or Discard)
+        # Trumping or Discarding
         if trump and trump != 'NT':
             trumps = [c for c in hand if c['suit'] == trump]
             if trumps:
                 best = min(trumps, key=lambda c: c['val'])
                 return best, f"Ruff (trump) the trick with your lowest trump ({best['rank']}{best['suit']})."
 
-        # Discard lowest card
         best = min(hand, key=lambda c: c['val'])
-        return best, f"Void in {lead_suit}; discard low ({best['rank']}{best['suit']}) to preserve high winners."
+        return best, f"Void in {lead_suit}; sluff your lowest card ({best['rank']}{best['suit']})."
 
 game = BridgeGame()
 
@@ -155,39 +177,41 @@ game = BridgeGame()
 def index():
     return render_template('index.html')
 
+@socketio.on('set_mode')
+def on_set_mode(data):
+    game.mode = data.get('mode', 'single')
+    game.reset_game(next_dealer=False)
+    send_game_state()
+    check_bot_turn()
+
 @socketio.on('join_game')
 def on_join(data):
-    role = data.get('role')
-    if role in ['South', 'North']:
-        game.players[role] = True
-        join_room('bridge_room')
-        send_game_state()
+    join_room('bridge_room')
+    send_game_state()
 
 @socketio.on('make_bid')
 def on_bid(data):
     seat = SEATS[game.turn_idx]
     bid = data.get('bid')
 
-    # Evaluate Bid
     eval_res = game.evaluate_bid(seat)
     is_optimal = (bid == eval_res['best'])
-    status = 'best' if is_optimal else 'acceptable'
-    feedback = f"{'Optimal bid!' if is_optimal else 'Alternative choice.'} {eval_res['reason']}"
+    feedback = f"{'Optimal Bid!' if is_optimal else 'Acceptable / Alternative.'} {eval_res['reason']}"
 
     if bid == 'PASS':
         game.consecutive_passes += 1
-        game.bids.append({'seat': seat, 'bid': 'PASS', 'feedback': feedback, 'status': status})
+        game.bids.append({'seat': seat, 'bid': 'PASS', 'feedback': feedback, 'status': 'best' if is_optimal else 'acceptable'})
     else:
         level = int(bid[0])
         strain = bid[1:]
         game.highest_bid = {'level': level, 'strain': strain, 'seat': seat}
         game.consecutive_passes = 0
-        game.bids.append({'seat': seat, 'bid': bid, 'feedback': feedback, 'status': status})
+        game.bids.append({'seat': seat, 'bid': bid, 'feedback': feedback, 'status': 'best' if is_optimal else 'acceptable'})
 
-    # Check for Passed Out hand (4 initial passes)
+    # 4 consecutive passes to open = Passed Out (Auto Redeal)
     if len(game.bids) == 4 and all(b['bid'] == 'PASS' for b in game.bids):
         game.phase = 'PASSED_OUT'
-        game.coach_feedback = "All four players passed! Hand passed out. Dealing fresh hands..."
+        game.coach_feedback = "All four players passed out! Dealing a fresh hand..."
         send_game_state()
         socketio.sleep(2)
         game.reset_game(next_dealer=True)
@@ -195,7 +219,7 @@ def on_bid(data):
         check_bot_turn()
         return
 
-    # Check for Auction Completion (3 consecutive passes after an opening bid)
+    # 3 consecutive passes after a bid = Contract Finalized
     if game.consecutive_passes == 3 and game.highest_bid:
         finalize_auction()
     else:
@@ -209,7 +233,6 @@ def finalize_auction():
     strain = winning_bid['strain']
     winning_side = ['North', 'South'] if winning_bid['seat'] in ['North', 'South'] else ['East', 'West']
 
-    # Declarer is the FIRST player from the winning partnership to bid that strain
     declarer = winning_bid['seat']
     for b in game.bids:
         if b['seat'] in winning_side and b['bid'] not in ['PASS', 'X', 'XX'] and b['bid'][1:] == strain:
@@ -229,7 +252,7 @@ def finalize_auction():
     game.phase = 'PLAY'
     game.dummy_revealed = False
     game.turn_idx = SEATS.index(lead_seat)
-    game.coach_feedback = f"Auction complete! Contract: {game.contract['level']}{game.contract['strain']} by {declarer}. {lead_seat} makes opening lead."
+    game.coach_feedback = f"Contract: {game.contract['level']}{game.contract['strain']} by {declarer}. Opening lead by {lead_seat}."
 
 @socketio.on('play_card')
 def on_play_card(data):
@@ -245,10 +268,8 @@ def on_play_card(data):
         emit('error_message', {'msg': f'Must follow suit ({lead_suit})!'})
         return
 
-    # Card Coach Evaluation
     best_card, reason = game.evaluate_card(card_source)
     is_best = (best_card and played_card['suit'] == best_card['suit'] and played_card['rank'] == best_card['rank'])
-    status = 'best' if is_best else 'acceptable'
     feedback = f"{'Optimal play.' if is_best else 'Alternative play.'} {reason}"
 
     # Remove card from hand
@@ -261,14 +282,13 @@ def on_play_card(data):
         'seat': card_source,
         'card': played_card,
         'feedback': feedback,
-        'status': status
+        'status': 'best' if is_best else 'acceptable'
     })
 
-    # Dummy is revealed right after the opening lead
+    # Reveal Dummy immediately after opening lead
     if not game.dummy_revealed:
         game.dummy_revealed = True
 
-    # Check if trick is finished (4 cards)
     if len(game.current_trick) == 4:
         send_game_state()
         socketio.sleep(1.2)
@@ -303,13 +323,11 @@ def resolve_trick():
     game.current_trick = []
     game.turn_idx = SEATS.index(winner_seat)
 
-    # Check if all 13 tricks are done
     if sum(game.tricks_won.values()) == 13:
         game.phase = 'HAND_OVER'
-        ns_needed = game.contract['target'] if game.contract['declarer'] in ['North', 'South'] else (14 - game.contract['target'])
         won = game.tricks_won['NS'] if game.contract['declarer'] in ['North', 'South'] else game.tricks_won['EW']
         success = won >= game.contract['target']
-        game.coach_feedback = f"Hand completed! Contract {game.contract['level']}{game.contract['strain']} {'MADE' if success else 'DEFEATED'} ({won}/{game.contract['target']} tricks)."
+        game.coach_feedback = f"Hand Complete! Contract {game.contract['level']}{game.contract['strain']} {'MADE' if success else 'DEFEATED'} ({won}/{game.contract['target']} tricks)."
 
 @socketio.on('new_deal')
 def on_new_deal():
@@ -322,15 +340,11 @@ def check_bot_turn():
         return
 
     current_seat = SEATS[game.turn_idx]
-    
-    # In play phase: if current seat is dummy, Declarer plays for Dummy
-    acting_seat = current_seat
-    if game.phase == 'PLAY' and current_seat == game.contract['dummy']:
-        acting_seat = game.contract['declarer']
+    controller = game.get_controller(current_seat)
 
-    # If the entity responsible for playing is a Bot (East or West)
-    if acting_seat in ['East', 'West']:
-        socketio.sleep(0.9)
+    # Only act automatically if the controlling entity is a bot
+    if game.is_bot(controller):
+        socketio.sleep(0.8)
         if game.phase == 'BIDDING':
             eval_res = game.evaluate_bid(current_seat)
             on_bid({'bid': eval_res['best']})
@@ -351,6 +365,7 @@ def send_game_state():
             advice = {'best': f"{card['rank']}{card['suit']}", 'reason': reason}
 
     state = {
+        'mode': game.mode,
         'phase': game.phase,
         'current_seat': current_seat,
         'dealer': SEATS[game.dealer_idx],
